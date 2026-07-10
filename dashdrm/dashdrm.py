@@ -165,6 +165,7 @@ class MPEGDASHDRM(MPEGDASH):
             parts = k.split(':', 1)
             if match_kid and len(parts) == 2:
                 kid, key = parts
+                kid = kid.replace("-", "").lower()
                 log.debug('Decryption Key %s has KID %s', key, kid)
             else:
                 key = parts[-1]
@@ -219,7 +220,7 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
     def _get_keys(cls, session):
         keys=[]
         if session.options.get("decryption-key"):
-            keys = session.options.get("decryption-key")
+            keys = list(session.options.get("decryption-key"))
             # If only 1 key is given, then we use that also for all remaining
             # streams
             if len(keys) == 1:
@@ -232,6 +233,12 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
         # if a decryption key is set, we rebuild the ffmpeg command list
         # to include the key before specifying the input stream
         keys = self._get_keys(session)
+        kid_lookup = {
+            key.kid: key
+            for key in keys
+            if key.kid is not None
+        }
+        representations = (stream.representation for stream in streams)
         key = 0
         subtitles = self.session.options.get("use-subtitles")
         vid_codec_preset = None
@@ -246,12 +253,30 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
             if cmd == "-i":
                 _ = old_cmd.pop(0)
                 if keys:
-                    self._cmd.extend(["-decryption_key", keys[key]])
-                    key += 1
-                    # If we had more streams than keys, start with the first
-                    # audio key again
-                    if key == len(keys):
-                        key = 1
+                    if session.options.get("match-kid"):
+                        try:
+                            rep = next(representations)
+                        except StopIteration:
+                            raise PluginError(
+                                "Internal error: representation list exhausted while building ffmpeg command."
+                            )
+                        if rep.kid is None:
+                            raise PluginError(
+                                f"Unable to determine KID for representation {rep.ident}"
+                            )
+                        matched = kid_lookup.get(rep.kid)
+                        if matched is None:
+                            raise PluginError(
+                                f"No decryption key supplied for KID {rep.kid}"
+                            )
+                        self._cmd.extend(["-decryption_key", matched])
+                    else:
+                        self._cmd.extend(["-decryption_key", keys[key]])
+                        key += 1
+                        # If we had more streams than keys, start with the first
+                        # audio key again
+                        if key == len(keys):
+                            key = 1
                 self._cmd.extend(['-thread_queue_size', '4096'])
                 self._cmd.extend([cmd, _])
             elif subtitles and cmd == "-c:a":
@@ -616,6 +641,10 @@ class DASHStreamReaderDRM(DASHStreamReader):
     writer: DASHStreamWriterDRM
     stream: DASHStreamDRM
 
+    def __init__(self, stream: DASHStream, representation: Representation, **kwargs):
+        super().__init__(stream, representation, **kwargs)
+        self.representation = representation
+
 class DASHStreamReaderDRMVideo(DASHStreamReaderDRM):
     __worker__ = DASHStreamWorkerDRMVideo
     __writer__ = DASHStreamWriterDRM
@@ -715,6 +744,8 @@ class DASHStreamDRM(DASHStream):
         except Exception as err:
             raise PluginError(f"Failed to parse MPD manifest: {err}") from err
 
+        match_kid = True if session.options.get("match-kid") else False
+
         if session.options.get("presentation-delay"):
             presentation_delay = session.options.get("presentation-delay")
             mpd.suggestedPresentationDelay = timedelta(
@@ -759,6 +790,16 @@ class DASHStreamDRM(DASHStream):
                 elif (session.options.get("use-subtitles") and
                         rep.mimeType.startswith("application")):
                     subtitles.append(rep)
+
+                if match_kid:
+                    rep.kid = cls._get_representation_kid(session, rep)
+                    log.debug(
+                        "Representation %s KID=%s",
+                        rep.ident,
+                        rep.kid,
+                    )
+                else:
+                    rep.kid = None
 
         if not video:
             video.append(None)
@@ -849,6 +890,68 @@ class DASHStreamDRM(DASHStream):
             ret_new[stream_name].stream_name = stream_name
 
         return ret_new
+
+    @staticmethod
+    def _get_init_segment(session: Streamlink, rep: Representation) -> bytes | None:
+        segments = rep.segments(init=True)
+
+        try:
+            segment = next(segments)
+        except StopIteration:
+            return None
+
+        if not segment.init:
+            return None
+
+        request = session.http.get(segment.uri)
+
+        if segment.byterange:
+            start, length = segment.byterange
+            end = start + length - 1 if length else ""
+            request = session.http.get(
+                segment.uri,
+                headers={"Range": f"bytes={start}-{end}"},
+            )
+
+        return request.content
+
+    @staticmethod
+    def _extract_kid(data: bytes) -> str | None:
+        tenc = b"tenc"
+
+        index = data.find(tenc)
+
+        if index == -1:
+            return None
+
+        if index + 28 > len(data):
+            return None
+
+        return data[index + 12:index + 28].hex()
+
+    @classmethod
+    def _get_representation_kid(
+            cls,
+            session: Streamlink,
+            rep: Representation,
+    ) -> str | None:
+
+        # Get from MPD
+        for cp in rep.contentProtections:
+            if cp.default_KID:
+                return cp.default_KID.replace("-", "").lower()
+
+        for cp in rep.parent.contentProtections:
+            if cp.default_KID:
+                return cp.default_KID.replace("-", "").lower()
+
+        # Fallback to init segment
+        init = cls._get_init_segment(session, rep)
+
+        if init is None:
+            return None
+
+        return cls._extract_kid(init)
 
     def open(self):
         video, audio, audio1 = None, None, None
