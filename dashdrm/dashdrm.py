@@ -197,6 +197,10 @@ class MPEGDASHDRM(MPEGDASH):
                     key=key,
                 )
             )
+        if match_kid and not any(key.kid for key in return_keys):
+            raise FatalPluginError(
+                "--dashdrm-match-kid requires at least one KID:KEY pair."
+            )
         return return_keys
 
 
@@ -206,14 +210,19 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
     to ffmpeg
 
     We build a list of keys to use based on the value of command line option
-    --dashdrm-decryption-keys. If only 1 key is given, it's used for
-    all streams. If more than 1 key is given, the first key is used for
-    video, and the remaining keys used for remaining streams. If the number
-    of keys given is less than the number of streams, keys are looped
-    starting from the first key after the video key. This will basically
-    mean if you have a key for video, and a key for the rest of the streams
-    you just need to specify 2 keys, but alternatively you can provide a
-    different key for every single stream if needed
+    --dashdrm-decryption-keys.
+    If --dashdrm-match-kid is set, decryption keys do not need to be ordered
+    and instead will be selected based by matching the KID to the video/
+    audio/subtitle stream.
+    If --dashdrm-match-kid is not set, any supplied KIDs are ignored. If
+    only 1 key is given, it's used for all streams. If more than 1 key is
+    given, the first key is used for video, and the remaining keys used for
+    remaining streams. If the number of keys given is less than the number
+    of streams, keys are looped starting from the first key after the video
+    key. This will basically mean if you have a key for video, and a key for
+    the rest of the streams you just need to specify 2 keys, but
+    alternatively you can provide a different key for every single stream if
+    needed
     '''
 
     @classmethod
@@ -269,7 +278,13 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
                             raise PluginError(
                                 f"No decryption key supplied for KID {rep.kid}"
                             )
-                        self._cmd.extend(["-decryption_key", matched])
+                        self._cmd.extend(["-decryption_key", str(matched)])
+                        log.debug(
+                            "Matched Representation %s (KID=%s) -> decryption key %s",
+                            rep.ident,
+                            rep.kid,
+                            str(matched),
+                        )
                     else:
                         self._cmd.extend(["-decryption_key", keys[key]])
                         key += 1
@@ -641,8 +656,14 @@ class DASHStreamReaderDRM(DASHStreamReader):
     writer: DASHStreamWriterDRM
     stream: DASHStreamDRM
 
-    def __init__(self, stream: DASHStream, representation: Representation, **kwargs):
-        super().__init__(stream, representation, **kwargs)
+    def __init__(
+            self,
+            stream: DASHStream,
+            representation: Representation,
+            *args,
+            **kwargs,
+    ):
+        super().__init__(stream, representation, *args, **kwargs)
         self.representation = representation
 
 class DASHStreamReaderDRMVideo(DASHStreamReaderDRM):
