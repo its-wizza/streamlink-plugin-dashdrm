@@ -6,6 +6,7 @@ import base64
 import queue
 from collections import defaultdict
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import List, Self
 from datetime import timedelta
 
@@ -51,6 +52,11 @@ DASHDRM_OPTIONS = [
     "disable-multi-audio",
     "language",
 ]
+
+@dataclass(frozen=True, slots=True)
+class DecryptionKey:
+    kid: str | None
+    key: str
 
 @pluginmatcher(
     priority=HIGH_PRIORITY,
@@ -234,7 +240,7 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
             # streams
             if len(keys) == 1:
                 keys.extend(keys)
-        log.debug('Decryption Keys %s', [kid_key_pair.key for kid_key_pair in keys])
+        log.debug('Decryption Keys %s', [key.key for key in keys])
         return keys
 
     def __init__(self, session, *streams, **options):
@@ -243,9 +249,9 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
         # to include the key before specifying the input stream
         keys = self._get_keys(session)
         kid_lookup = {
-            kid_key_pair.kid: kid_key_pair.key
-            for kid_key_pair in keys
-            if kid_key_pair.kid is not None
+            key.kid: key.key
+            for key in keys
+            if key.kid is not None
         }
         representations = (stream.representation for stream in streams)
         key = 0
@@ -286,7 +292,7 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
                             matched,
                         )
                     else:
-                        self._cmd.extend(["-decryption_key", str(keys[key])])
+                        self._cmd.extend(["-decryption_key", keys[key].key])
                         key += 1
                         # If we had more streams than keys, start with the first
                         # audio key again
@@ -1028,26 +1034,6 @@ class DASHStreamDRM(DASHStream):
             return video
         elif audio:
             return audio1
-
-class DecryptionKey(str):
-    """
-    A decryption key that behaves exactly like a string but optionally
-    carries the KID it belongs to.
-    """
-
-    def __new__(cls, key: str, kid: str | None = None):
-        obj = super().__new__(cls, key)
-        obj.kid = kid if kid else None
-        return obj
-
-    @property
-    def key(self):
-        return str(self)
-
-    def __repr__(self):
-        if self.kid:
-            return f"DecryptionKey(kid={self.kid}, key={str(self)})"
-        return f"DecryptionKey(key={str(self)})"
 
 
 __plugin__ = MPEGDASHDRM
