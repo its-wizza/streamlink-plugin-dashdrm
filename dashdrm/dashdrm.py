@@ -152,30 +152,41 @@ class MPEGDASHDRM(MPEGDASH):
         # last component after the colon
         return_keys = []
         for k in keys:
-            key = k.split(':')
-            key_len = len(key[-1])
-            log.debug('Decryption Key %s has %s digits', key[-1], key_len)
+            kid = None
+            parts = k.split(':', 1)
+            if len(parts) == 2:
+                kid, key = parts
+                log.debug('Decryption Key %s has KID %s', key, kid)
+            else:
+                key = parts[-1]
+            key_len = len(key)
+            log.debug('Decryption Key %s has %s digits', key, key_len)
             if key_len in (21, 22, 23, 24):
                 # key len of 21-24 may mean a base64 key was provided, so we
                 # try and decode it
                 log.debug("Decryption key length is too short to be hex and looks like it might be base64, so we'll try and decode it..")
-                b64_string = key[-1]
+                b64_string = key
                 padding = 4 - (len(b64_string) % 4)
                 b64_string = b64_string + ("=" * padding)
                 b64_key = base64.urlsafe_b64decode(b64_string).hex()
                 if b64_key:
-                    key = [b64_key]
+                    key = b64_key
                     key_len = len(b64_key)
-                    log.debug('Decryption Key (post base64 decode) is %s and has %s digits', key[-1], key_len)
+                    log.debug('Decryption Key (post base64 decode) is %s and has %s digits', key, key_len)
             if key_len == 32:
                 # sanity check that it's a valid hex string
                 try:
-                    int(key[-1], 16)
+                    int(key, 16)
                 except ValueError as err:
                     raise FatalPluginError("Expecting 128bit key in 32 hex digits, but the key contains invalid hex.")
             elif key_len != 32:
                 raise FatalPluginError("Expecting 128bit key in 32 hex digits.")
-            return_keys.append(key[-1])
+            return_keys.append(
+                DecryptionKey(
+                    kid=kid,
+                    key=key,
+                )
+            )
         return return_keys
 
 
@@ -884,6 +895,26 @@ class DASHStreamDRM(DASHStream):
             return video
         elif audio:
             return audio1
+
+class DecryptionKey(str):
+    """
+    A decryption key that behaves exactly like a string but optionally
+    carries the KID it belongs to.
+    """
+
+    def __new__(cls, key: str, kid: str | None = None):
+        obj = super().__new__(cls, key)
+        obj.kid = kid if kid else None
+        return obj
+
+    @property
+    def key(self):
+        return str(self)
+
+    def __repr__(self):
+        if self.kid:
+            return f"DecryptionKey(kid={self.kid}, key={str(self)})"
+        return f"DecryptionKey(key={str(self)})"
 
 
 __plugin__ = MPEGDASHDRM
