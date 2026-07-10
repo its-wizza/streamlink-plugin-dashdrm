@@ -39,6 +39,7 @@ log = getLogger(__name__)
 
 DASHDRM_OPTIONS = [
     "decryption-key",
+    "match-kid",
     "presentation-delay",
     "use-subtitles",
     "ignore-location",
@@ -59,6 +60,14 @@ DASHDRM_OPTIONS = [
     "decryption-key",
     type="comma_list",
     help="Decryption key(s) to be passed to ffmpeg."
+)
+@pluginargument(
+    "match-kid",
+    action="store_true",
+    help=(
+        "Match decryption keys to streams using the KID instead of the order the "
+        "keys were supplied."
+    ),
 )
 @pluginargument(
     "presentation-delay",
@@ -148,13 +157,13 @@ class MPEGDASHDRM(MPEGDASH):
 
     def _process_keys(self):
         keys = self.get_option('decryption-key')
-        # if a colon separated key is given, assume its kid:key and take the
-        # last component after the colon
+        match_kid = self.get_option("match-kid")
+        # if a colon separated key is given, assume its kid:key
         return_keys = []
         for k in keys:
             kid = None
             parts = k.split(':', 1)
-            if len(parts) == 2:
+            if match_kid and len(parts) == 2:
                 kid, key = parts
                 log.debug('Decryption Key %s has KID %s', key, kid)
             else:
