@@ -40,7 +40,13 @@ The plugin accepts a number of optional parameters:
   </TR>
   <TR>
     <TD>--dashdrm-decryption-key &ltkey in hex or base64&gt</TD>
-    <TD>This is a comma seperated list of decryption keys to be passed to ffmpeg. If only one key is given, then all streams will use this key. If 2 keys are given, then the video stream will use the first key, and all remaining streams (eg audio streams) will use the second key. If more than 2 keys are given, then the video stream will use the first key, and the second stream will use the second key, the third stream will use the third key etc. If more streams than keys are given, keys will be looped starting with the second key. The keys need to be in hex or base64, either just the key by itself, or in the format of kid:key (although the kid is not used)</TD>
+    <TD>This is a comma seperated list of decryption keys to be passed to ffmpeg. By default, keys are assigned to streams by position. If only one key is given, then all streams will use this key. If 2 keys are given, then the video stream will use the first key, and all remaining streams (eg audio streams) will use the second key. If more than 2 keys are given, then the video stream will use the first key, and the second stream will use the second key, the third stream will use the third key etc. If more streams than keys are given, keys will be looped starting with the second key. The keys need to be in hex or base64, either just the key by itself, or in the format of kid:key. The kid is ignored unless --dashdrm-match-kid is enabled</TD>
+  </TR>
+  <TR>
+    <TD>--dashdrm-match-kid</TD>
+    <TD>
+      Match decryption keys to streams using their kid instead of the order the keys were supplied. When enabled, decryption keys should be supplied to --dashdrm-decryption-key in the format kid:key. The kid is automatically detected for each stream and selects the appropriate key, allowing keys to be supplied in any order
+    </TD>
   </TR>
   <TR>
     <TD>--dashdrm-presentation-delay &ltdelay in seconds&gt</TD>
