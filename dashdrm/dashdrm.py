@@ -234,7 +234,7 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
             # streams
             if len(keys) == 1:
                 keys.extend(keys)
-        log.debug('Decryption Keys %s', keys)
+        log.debug('Decryption Keys %s', [kid_key_pair.key for kid_key_pair in keys])
         return keys
 
     def __init__(self, session, *streams, **options):
@@ -243,9 +243,9 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
         # to include the key before specifying the input stream
         keys = self._get_keys(session)
         kid_lookup = {
-            key.kid: key
-            for key in keys
-            if key.kid is not None
+            kid_key_pair.kid: kid_key_pair.key
+            for kid_key_pair in keys
+            if kid_key_pair.kid is not None
         }
         representations = (stream.representation for stream in streams)
         key = 0
@@ -278,15 +278,15 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
                             raise PluginError(
                                 f"No decryption key supplied for KID {rep.kid}"
                             )
-                        self._cmd.extend(["-decryption_key", str(matched)])
+                        self._cmd.extend(["-decryption_key", matched])
                         log.debug(
                             "Matched Representation %s (KID=%s) -> decryption key %s",
                             rep.ident,
                             rep.kid,
-                            str(matched),
+                            matched,
                         )
                     else:
-                        self._cmd.extend(["-decryption_key", keys[key]])
+                        self._cmd.extend(["-decryption_key", str(keys[key])])
                         key += 1
                         # If we had more streams than keys, start with the first
                         # audio key again
