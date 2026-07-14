@@ -58,7 +58,9 @@ DASHDRM_OPTIONS = [
 @pluginargument(
     "decryption-key",
     type="comma_list",
-    help="Decryption key(s) to be passed to ffmpeg."
+    help="Decryption key(s) to be passed to ffmpeg. Keys may be supplied as"
+    " 'key' or 'kid:key'. When KIDs are supplied, keys are matched to"
+    " streams automatically, otherwise positional matching is used."
 )
 @pluginargument(
     "presentation-delay",
@@ -147,6 +149,20 @@ class MPEGDASHDRM(MPEGDASH):
                                             **params)
 
     def _process_keys(self):
+        """
+            Parse user-supplied decryption keys.
+
+            Keys may be supplied either as:
+
+                key
+
+            or
+
+                kid:key
+
+            Returns a list of tuples.
+            Each tuple contains (kid, key), where kid is None if no KID was supplied.
+            """
         keys = self.get_option('decryption-key')
         # if a colon separated key is given, assume its kid:key
         return_keys = []
@@ -184,7 +200,7 @@ class MPEGDASHDRM(MPEGDASH):
             elif key_len != 32:
                 raise FatalPluginError("Expecting 128bit key in 32 hex digits.")
             return_keys.append((kid, key))
-        self.session.options["set-representation-kid"] = has_kid
+        self.session.options["store-representation-kid"] = has_kid
         return return_keys
 
 
@@ -193,20 +209,10 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
     Inherit and extend the FFMPEGMuxer class to pass decryption keys
     to ffmpeg
 
-    We build a list of keys to use based on the value of command line option
-    --dashdrm-decryption-keys.
-    If --dashdrm-match-kid is set, decryption keys do not need to be ordered
-    and instead will be selected based by matching the KID to the video/
-    audio/subtitle stream.
-    If --dashdrm-match-kid is not set, any supplied KIDs are ignored. If
-    only 1 key is given, it's used for all streams. If more than 1 key is
-    given, the first key is used for video, and the remaining keys used for
-    remaining streams. If the number of keys given is less than the number
-    of streams, keys are looped starting from the first key after the video
-    key. This will basically mean if you have a key for video, and a key for
-    the rest of the streams you just need to specify 2 keys, but
-    alternatively you can provide a different key for every single stream if
-    needed
+    The caller supplies a list of decryption keys corresponding to the input
+    streams. Each entry is either a hexadecimal decryption key or None for an
+    unencrypted stream. When a key is present, it is passed to FFMPEG using the
+    -decryption_key input option.
     '''
 
     def __init__(self, session, *streams, **options):
@@ -743,7 +749,7 @@ class DASHStreamDRM(DASHStream):
                         rep.mimeType.startswith("application")):
                     subtitles.append(rep)
 
-                if session.options.get("set-representation-kid"):
+                if session.options.get("store-representation-kid"):
                     rep.kid = cls._get_representation_kid(session, rep)
                     log.debug(
                         "Representation %s KID=%s",
@@ -842,6 +848,15 @@ class DASHStreamDRM(DASHStream):
         return ret_new
 
     def _resolve_decryption_keys(self, readers):
+        """
+        Resolve one decryption key for each input stream.
+
+        If user-supplied KIDs are available, representations are matched by KID.
+        If KID matching cannot be completed for every stream, positional key
+        assignment is used instead.
+
+        Returns a list of keys aligned with the supplied reader objects.
+        """
         in_keys = self.session.options.get("decryption-key")
         if not in_keys:
             return []
