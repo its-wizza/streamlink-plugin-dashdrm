@@ -40,7 +40,6 @@ log = getLogger(__name__)
 
 DASHDRM_OPTIONS = [
     "decryption-key",
-    "match-kid",
     "presentation-delay",
     "use-subtitles",
     "ignore-location",
@@ -208,30 +207,15 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
     needed
     '''
 
-    @classmethod
-    def _get_keys(cls, session):
-        keys=[]
-        if session.options.get("decryption-key"):
-            keys = list(session.options.get("decryption-key"))
-            # If only 1 key is given, then we use that also for all remaining
-            # streams
-            if len(keys) == 1:
-                keys.extend(keys)
-        log.debug('Decryption Keys %s', [key.key for key in keys])
-        return keys
-
     def __init__(self, session, *streams, **options):
+        keys = options.pop("keys", None) or []
+        if keys and len(keys) != len(streams):
+            raise PluginError(f"Decryption key count ({len(keys)}) does not match stream count ({len(streams)}).")
+
         super().__init__(session, *streams, **options)
         # if a decryption key is set, we rebuild the ffmpeg command list
         # to include the key before specifying the input stream
-        keys = self._get_keys(session)
-        kid_lookup = {
-            key.kid: key.key
-            for key in keys
-            if key.kid is not None
-        }
-        representations = (stream.representation for stream in streams)
-        key = 0
+        k = 0
         subtitles = self.session.options.get("use-subtitles")
         vid_codec_preset = None
         if session.options.get("video-codec-preset"):
@@ -245,36 +229,10 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
             if cmd == "-i":
                 _ = old_cmd.pop(0)
                 if keys:
-                    if session.options.get("match-kid"):
-                        try:
-                            rep = next(representations)
-                        except StopIteration:
-                            raise PluginError(
-                                "Internal error: representation list exhausted while building ffmpeg command."
-                            )
-                        if rep.kid is None:
-                            raise PluginError(
-                                f"Unable to determine KID for representation {rep.ident}"
-                            )
-                        matched = kid_lookup.get(rep.kid)
-                        if matched is None:
-                            raise PluginError(
-                                f"No decryption key supplied for KID {rep.kid}"
-                            )
-                        self._cmd.extend(["-decryption_key", matched])
-                        log.debug(
-                            "Matched Representation %s (KID=%s) -> decryption key %s",
-                            rep.ident,
-                            rep.kid,
-                            matched,
-                        )
-                    else:
-                        self._cmd.extend(["-decryption_key", keys[key].key])
-                        key += 1
-                        # If we had more streams than keys, start with the first
-                        # audio key again
-                        if key == len(keys):
-                            key = 1
+                    key = keys[k]
+                    if key is not None:
+                        self._cmd.extend(["-decryption_key", key])
+                    k += 1
                 self._cmd.extend(['-thread_queue_size', '4096'])
                 self._cmd.extend([cmd, _])
             elif subtitles and cmd == "-c:a":
@@ -782,14 +740,6 @@ class DASHStreamDRM(DASHStream):
                 elif (session.options.get("use-subtitles") and
                         rep.mimeType.startswith("application")):
                     subtitles.append(rep)
-                    
-                rep.kid = cls._get_representation_kid(session, rep)
-                if rep.kid:
-                    log.debug(
-                        "Representation %s KID=%s",
-                        rep.ident,
-                        rep.kid,
-                    )
 
         if not video:
             video.append(None)
@@ -880,6 +830,31 @@ class DASHStreamDRM(DASHStream):
             ret_new[stream_name].stream_name = stream_name
 
         return ret_new
+
+    def _resolve_decryption_keys(self, readers):
+        in_keys = self.session.options.get("decryption-key")
+        out_keys = []
+        if not in_keys:
+            return []
+        kid_lookup = {
+            kid: key
+            for kid, key in in_keys
+            if kid is not None
+        }
+        for reader in readers:
+            key = None
+            representation = self.mpd.get_representation(reader.ident)
+            if representation:
+                kid = self._get_representation_kid(self.session, representation)
+                if kid:
+                    log.debug(
+                        "Representation %s KID=%s",
+                        representation.ident,
+                        kid,
+                    )
+                    key = kid_lookup.get(kid)
+            out_keys.append(key)
+        return out_keys
 
     @staticmethod
     def _get_init_segment(session: Streamlink, rep: Representation) -> bytes | None:
@@ -991,8 +966,10 @@ class DASHStreamDRM(DASHStream):
                 metadata["s:s:{0}".format(_)] = ["language={0}".format(rep_subtitle.lang), "title=\"{0}\"".format(rep_subtitle.lang)]
             maps.extend(f"{_}:s" for _ in range(next_map, next_map + len(rep_subtitles)))
 
+        keys = self._resolve_decryption_keys(fds)
+
         if video and audio and FFMPEGMuxerDRM.is_usable(self.session):
-            return FFMPEGMuxerDRM(self.session, *fds, copyts=True, maps=maps, metadata=metadata).open()
+            return FFMPEGMuxerDRM(self.session, *fds, keys=keys, copyts=True, maps=maps, metadata=metadata).open()
         elif video:
             return video
         elif audio:
