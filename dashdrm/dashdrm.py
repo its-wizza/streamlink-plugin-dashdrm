@@ -53,11 +53,6 @@ DASHDRM_OPTIONS = [
     "language",
 ]
 
-@dataclass(frozen=True, slots=True)
-class DecryptionKey:
-    kid: str | None
-    key: str
-
 @pluginmatcher(
     priority=HIGH_PRIORITY,
     pattern=re.compile(r"dashdrm://(?P<url>\S+)(?:\s(?P<params>.+))?$"),
@@ -66,14 +61,6 @@ class DecryptionKey:
     "decryption-key",
     type="comma_list",
     help="Decryption key(s) to be passed to ffmpeg."
-)
-@pluginargument(
-    "match-kid",
-    action="store_true",
-    help=(
-        "Match decryption keys to streams using the KID instead of the order the "
-        "keys were supplied."
-    ),
 )
 @pluginargument(
     "presentation-delay",
@@ -163,16 +150,15 @@ class MPEGDASHDRM(MPEGDASH):
 
     def _process_keys(self):
         keys = self.get_option('decryption-key')
-        match_kid = self.get_option("match-kid")
         # if a colon separated key is given, assume its kid:key
         return_keys = []
         for k in keys:
             kid = None
             parts = k.split(':', 1)
-            if match_kid and len(parts) == 2:
+            if len(parts) == 2:
                 kid, key = parts
                 kid = kid.replace("-", "").lower()
-                log.debug('Decryption Key %s has KID %s', key, kid)
+                log.debug('Decryption key %s has KID %s', key, kid)
             else:
                 key = parts[-1]
             key_len = len(key)
@@ -197,16 +183,7 @@ class MPEGDASHDRM(MPEGDASH):
                     raise FatalPluginError("Expecting 128bit key in 32 hex digits, but the key contains invalid hex.")
             elif key_len != 32:
                 raise FatalPluginError("Expecting 128bit key in 32 hex digits.")
-            return_keys.append(
-                DecryptionKey(
-                    kid=kid,
-                    key=key,
-                )
-            )
-        if match_kid and not any(key.kid for key in return_keys):
-            raise FatalPluginError(
-                "--dashdrm-match-kid requires at least one KID:KEY pair."
-            )
+            return_keys.append((kid, key))
         return return_keys
 
 
@@ -761,8 +738,6 @@ class DASHStreamDRM(DASHStream):
         except Exception as err:
             raise PluginError(f"Failed to parse MPD manifest: {err}") from err
 
-        match_kid = True if session.options.get("match-kid") else False
-
         if session.options.get("presentation-delay"):
             presentation_delay = session.options.get("presentation-delay")
             mpd.suggestedPresentationDelay = timedelta(
@@ -807,16 +782,14 @@ class DASHStreamDRM(DASHStream):
                 elif (session.options.get("use-subtitles") and
                         rep.mimeType.startswith("application")):
                     subtitles.append(rep)
-
-                if match_kid:
-                    rep.kid = cls._get_representation_kid(session, rep)
+                    
+                rep.kid = cls._get_representation_kid(session, rep)
+                if rep.kid:
                     log.debug(
                         "Representation %s KID=%s",
                         rep.ident,
                         rep.kid,
                     )
-                else:
-                    rep.kid = None
 
         if not video:
             video.append(None)
