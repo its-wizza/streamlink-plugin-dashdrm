@@ -741,6 +741,13 @@ class DASHStreamDRM(DASHStream):
                         rep.mimeType.startswith("application")):
                     subtitles.append(rep)
 
+                rep.kid = cls._get_representation_kid(session, rep)
+                log.debug(
+                    "Representation %s KID=%s",
+                    rep.ident,
+                    rep.kid,
+                )
+
         if not video:
             video.append(None)
         if not audio:
@@ -833,28 +840,63 @@ class DASHStreamDRM(DASHStream):
 
     def _resolve_decryption_keys(self, readers):
         in_keys = self.session.options.get("decryption-key")
-        out_keys = []
         if not in_keys:
             return []
+
         kid_lookup = {
             kid: key
             for kid, key in in_keys
             if kid is not None
         }
+
+        def positional_match():
+            keys = [key for _, key in in_keys]
+            # If only 1 key is given, then we use that also for all remaining streams
+            if len(keys) == 1:
+                return [keys[0]] * len(readers)
+            out_keys = []
+            key = 0
+            for _ in readers:
+                out_keys.append(keys[key])
+                key += 1
+                # If we had more streams than keys, start with the first audio key again
+                if key == len(keys):
+                    key = 1
+            return out_keys
+
+        if not kid_lookup:
+            if len(in_keys) > 1:
+                log.debug("No KIDs provided, using positional key assignment")
+            return positional_match()
+
+        rtn_keys = []
+
         for reader in readers:
-            key = None
             representation = self.mpd.get_representation(reader.ident)
-            if representation:
-                kid = self._get_representation_kid(self.session, representation)
-                if kid:
-                    log.debug(
-                        "Representation %s KID=%s",
-                        representation.ident,
-                        kid,
-                    )
-                    key = kid_lookup.get(kid)
-            out_keys.append(key)
-        return out_keys
+            if not representation:
+                log.debug("Unable to find representation, falling back to positional key assignment")
+                return positional_match()
+            kid = getattr(representation, "kid", None)
+            if kid:
+                log.debug(
+                    "Representation %s KID=%s",
+                    representation.ident,
+                    kid,
+                )
+            else:
+                log.debug("Representation %s missing kid attr", representation.ident)
+            key = kid_lookup.get(kid)
+            if key is None:
+                log.debug(
+                    "Unable to match representation %s by KID, falling back to positional key assignment",
+                    representation.ident,
+                )
+                return positional_match()
+
+            rtn_keys.append(key)
+
+        log.debug("Successfully matched all representations by KID")
+        return rtn_keys
 
     @staticmethod
     def _get_init_segment(session: Streamlink, rep: Representation) -> bytes | None:
