@@ -254,7 +254,7 @@ class FFMPEGMuxerDRM(FFMPEGMuxer):
             else:
                 self._cmd.append(cmd)
         #self._cmd.extend(["-report"])
-        log.error("Updated ffmpeg command %s", self._cmd)
+        log.debug("Updated ffmpeg command %s", self._cmd)
 
 
 class DASHStreamWriterDRM(DASHStreamWriter):
