@@ -760,7 +760,7 @@ class DASHStreamDRM(DASHStream):
                     subtitles.append(rep)
 
                 if session.options.get("store-representation-kid"):
-                    rep.kid = cls._find_representation_kid(session, rep, init_cache)
+                    rep.kid = cls._resolve_representation_kid(session, rep, init_cache)
                     log.debug(
                         "Representation %s KID=%s",
                         rep.ident,
@@ -926,7 +926,7 @@ class DASHStreamDRM(DASHStream):
         return rtn_keys
 
     @staticmethod
-    def _find_representation_kid(
+    def _resolve_representation_kid(
             session: Streamlink,
             rep: Representation,
             init_cache: InitCache,
@@ -1026,12 +1026,13 @@ class DASHStreamDRM(DASHStream):
             break
 
         if kid == ZERO_KID:
-            kid = DASHStreamDRM._extract_kid_from_pssh(data)
+            log.debug("Zero KID found in tenc, attempting PSSH fallback")
+            kid = DASHStreamDRM._extract_kid_from_pssh_box(data)
 
         return scheme, kid
 
     @staticmethod
-    def _extract_kid_from_pssh(data: bytes) -> str | None:
+    def _extract_kid_from_pssh_box(data: bytes) -> str | None:
         pssh = data.find(b"pssh")
 
         if pssh == -1:
